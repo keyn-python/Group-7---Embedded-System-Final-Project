@@ -5,7 +5,7 @@ import os
 app = Flask(__name__)
 
 # --- ADAFRUIT IO CREDENTIALS ---
-AIO_USERNAME = "cainejimenez"
+AIO_USERNAME = "CaineJimenez"
 AIO_KEY = os.environ.get("AIO_KEY") 
 
 FEED_KEY = "energy-management-system" 
