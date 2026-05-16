@@ -6,19 +6,12 @@ app = Flask(__name__)
 
 # --- ADAFRUIT IO CREDENTIALS ---
 AIO_USERNAME = "cainejimenez"
-AIO_KEY = os.environ.get("AIO_KEY") # This hides your password!
+AIO_KEY = os.environ.get("AIO_KEY") 
 
-# Note: Adafruit IO REST API uses lowercase and dashes for feed keys!
-# If your feed is named "Energy_Management_System", the key is "energy-management-system"
 FEED_KEY = "energy-management-system" 
 AIO_URL = f"https://io.adafruit.com/api/v2/{AIO_USERNAME}/feeds/{FEED_KEY}/data"
 
-HEADERS = {
-    "X-AIO-Key": AIO_KEY,
-    "Content-Type": "application/json"
-}
-
-# --- THE WEBSITE HTML ---
+# --- THE WEBSITE HTML (Upgraded to show exact errors) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -35,7 +28,7 @@ HTML_TEMPLATE = """
         .off-btn { background-color: #f38ba8; color: #11111b;}
         .on-btn:hover { background-color: #94cc90; transform: scale(1.05); }
         .off-btn:hover { background-color: #d97d96; transform: scale(1.05); }
-        #status { margin-top: 30px; font-weight: bold; color: #f9e2af; }
+        #status { margin-top: 30px; font-weight: bold; color: #f9e2af; padding: 0 20px;}
     </style>
 </head>
 <body>
@@ -62,11 +55,12 @@ HTML_TEMPLATE = """
                 if(data.status === "success") {
                     document.getElementById('status').innerText = "✅ Success: Pump is " + state;
                 } else {
-                    document.getElementById('status').innerText = "❌ Error sending command.";
+                    // This prints the EXACT error from Adafruit!
+                    document.getElementById('status').innerText = "❌ API Error: " + data.message;
                 }
             })
             .catch(error => {
-                document.getElementById('status').innerText = "❌ Network Error.";
+                document.getElementById('status').innerText = "❌ Network Error: " + error.message;
             });
         }
     </script>
@@ -76,24 +70,40 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def home():
-    # This serves the webpage when you visit the Railway URL
     return render_template_string(HTML_TEMPLATE)
 
 @app.route('/command', methods=['POST'])
 def command():
-    # This receives the button click from the website and forwards it to Adafruit IO
     state = request.json.get('state')
     
+    # 1. Check if Railway actually loaded your secret password!
+    if not AIO_KEY:
+        return jsonify({"status": "error", "message": "AIO_KEY variable is missing in Railway! Go to Variables tab."}), 400
+
+    headers = {
+        "X-AIO-Key": AIO_KEY,
+        "Content-Type": "application/json"
+    }
+    
     if state in ['ON', 'OFF']:
-        payload = {"datum": {"value": state}}
-        response = requests.post(AIO_URL, json=payload, headers=HEADERS)
+        payload = {"value": state}
         
-        if response.status_code == 200:
-            return jsonify({"status": "success", "state": state})
+        try:
+            # Send the request to Adafruit
+            response = requests.post(AIO_URL, json=payload, headers=headers)
             
-    return jsonify({"status": "error"}), 400
+            if response.status_code == 200:
+                return jsonify({"status": "success", "state": state})
+            else:
+                # 2. If it fails, capture the exact HTTP Code and Adafruit's complaint
+                error_msg = f"{response.status_code} - {response.text}"
+                return jsonify({"status": "error", "message": error_msg}), 400
+                
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+            
+    return jsonify({"status": "error", "message": "Invalid command"}), 400
 
 if __name__ == '__main__':
-    # Railway requires apps to bind to the PORT environment variable
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
