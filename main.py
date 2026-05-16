@@ -1,109 +1,131 @@
-from flask import Flask, render_template_string, request, jsonify
-import requests
-import os
+#include <WiFi.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
 
-app = Flask(__name__)
+// --- WIFI SETUP ---
+#define WLAN_SSID "GFiber_2.4_Coverage_D1617"
+#define WLAN_PASS "8EB32B5D"
 
-# --- ADAFRUIT IO CREDENTIALS ---
-AIO_USERNAME = "CaineJimenez"
-AIO_KEY = os.environ.get("AIO_KEY") 
+// --- ADAFRUIT IO SETUP ---
+#define AIO_SERVER      "io.adafruit.com"
+#define AIO_SERVERPORT  1883
+#define AIO_USERNAME    "CaineJimenez"
+#define AIO_KEY         "aio_MGZR666bEpMv2pI5e2BmhX83cN1E"
 
-FEED_KEY = "energy-management-system" 
-AIO_URL = f"https://io.adafruit.com/api/v2/{AIO_USERNAME}/feeds/{FEED_KEY}/data"
+// --- HARDWARE PINS ---
+const int relayPin = 4;
+const int moisturePin = 32;
+const int greenLedPin = 25;  // Wet Status
+const int yellowLedPin = 26; // Perfect Status
+const int redLedPin = 27;    // Dry Status
 
-# --- THE WEBSITE HTML (Upgraded to show exact errors) ---
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Smart Pump Dashboard</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; margin-top: 10%; background-color: #1e1e2e; color: #cdd6f4;}
-        h1 { color: #89b4fa; }
-        p { color: #a6adc8; font-size: 18px; }
-        .btn-container { margin-top: 40px; }
-        button { padding: 20px 50px; font-size: 22px; font-weight: bold; margin: 10px; border-radius: 12px; border: none; cursor: pointer; transition: 0.2s; color: white;}
-        .on-btn { background-color: #a6e3a1; color: #11111b;}
-        .off-btn { background-color: #f38ba8; color: #11111b;}
-        .on-btn:hover { background-color: #94cc90; transform: scale(1.05); }
-        .off-btn:hover { background-color: #d97d96; transform: scale(1.05); }
-        #status { margin-top: 30px; font-weight: bold; color: #f9e2af; padding: 0 20px;}
-    </style>
-</head>
-<body>
-    <h1>🌱 Smart Irrigation Control</h1>
-    <p>Control your ESP32 Pump directly from the cloud.</p>
-    
-    <div class="btn-container">
-        <button class="on-btn" onclick="sendCommand('ON')">WATER PLANT</button>
-        <button class="off-btn" onclick="sendCommand('OFF')">STOP PUMP</button>
-    </div>
-    
-    <p id="status"></p>
+// --- CALIBRATION THRESHOLDS (Percentages) ---
+const int dryThreshold = 35; // Below 35% is DRY
+const int wetThreshold = 65; // Above 65% is WET
 
-    <script>
-        function sendCommand(state) {
-            document.getElementById('status').innerText = "Sending command to cloud...";
-            fetch('/command', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ state: state })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if(data.status === "success") {
-                    document.getElementById('status').innerText = "✅ Success: Pump is " + state;
-                } else {
-                    // This prints the EXACT error from Adafruit!
-                    document.getElementById('status').innerText = "❌ API Error: " + data.message;
-                }
-            })
-            .catch(error => {
-                document.getElementById('status').innerText = "❌ Network Error: " + error.message;
-            });
-        }
-    </script>
-</body>
-</html>
-"""
+// --- MQTT SETUP ---
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
+Adafruit_MQTT_Subscribe Example_Feed = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/Energy_Management_System");
 
-@app.route('/')
-def home():
-    return render_template_string(HTML_TEMPLATE)
+void MQTT_connect();
 
-@app.route('/command', methods=['POST'])
-def command():
-    state = request.json.get('state')
-    
-    # 1. Check if Railway actually loaded your secret password!
-    if not AIO_KEY:
-        return jsonify({"status": "error", "message": "AIO_KEY variable is missing in Railway! Go to Variables tab."}), 400
+void setup() {
+  Serial.begin(115200);
+  delay(10);
+  
+  pinMode(relayPin, OUTPUT);
+  pinMode(greenLedPin, OUTPUT);
+  pinMode(yellowLedPin, OUTPUT);
+  pinMode(redLedPin, OUTPUT);
+  pinMode(moisturePin, INPUT);
 
-    headers = {
-        "X-AIO-Key": AIO_KEY,
-        "Content-Type": "application/json"
+  // Default: Pump OFF (Active-Low relay)
+  digitalWrite(relayPin, HIGH);
+
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(WLAN_SSID);
+
+  WiFi.begin(WLAN_SSID, WLAN_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected!");
+
+  mqtt.subscribe(&Example_Feed);
+}
+
+void loop() {
+  MQTT_connect();
+
+  // --- 1. LOCAL DASHBOARD (Automatic Monitoring) ---
+  int rawMoisture = analogRead(moisturePin);
+  
+  // Translate raw sensor values (2540 to 1400) into 0% to 100%
+  // 2540 = Bone Dry (0%), 1400 = Soaking Wet (100%)
+  int moisturePercent = map(rawMoisture, 2540, 1400, 0, 100);
+  
+  // Keep the percentage strictly between 0 and 100
+  moisturePercent = constrain(moisturePercent, 0, 100);
+
+  Serial.print("Soil Moisture: ");
+  Serial.print(moisturePercent);
+  Serial.println("%");
+
+  // Update Indicator LEDs based on Percentage
+  if (moisturePercent < dryThreshold) {
+    // DRY (Red)
+    digitalWrite(redLedPin, HIGH);
+    digitalWrite(yellowLedPin, LOW);
+    digitalWrite(greenLedPin, LOW);
+  } 
+  else if (moisturePercent >= dryThreshold && moisturePercent <= wetThreshold) {
+    // PERFECT (Yellow)
+    digitalWrite(redLedPin, LOW);
+    digitalWrite(yellowLedPin, HIGH);
+    digitalWrite(greenLedPin, LOW);
+  } 
+  else {
+    // WET (Green)
+    digitalWrite(redLedPin, LOW);
+    digitalWrite(yellowLedPin, LOW);
+    digitalWrite(greenLedPin, HIGH);
+  }
+
+  // --- 2. VOICE CONTROL (Manual Override via Cloud) ---
+  Adafruit_MQTT_Subscribe *subscription;
+  while ((subscription = mqtt.readSubscription(2000))) {
+    if (subscription == &Example_Feed) {
+      Serial.print("Voice Command Received: ");
+      Serial.println((char *)Example_Feed.lastread);
+
+      if (!strcmp((char*) Example_Feed.lastread, "ON")) {
+        digitalWrite(relayPin, LOW);   // Pump ON
+        Serial.println(">>> Pump ACTIVATED via Google Assistant");
+      } 
+      else if (!strcmp((char*) Example_Feed.lastread, "OFF")) {
+        digitalWrite(relayPin, HIGH);  // Pump OFF
+        Serial.println(">>> Pump DEACTIVATED via Google Assistant");
+      }
     }
-    
-    if state in ['ON', 'OFF']:
-        payload = {"value": state}
-        
-        try:
-            # Send the request to Adafruit
-            response = requests.post(AIO_URL, json=payload, headers=headers)
-            
-            if response.status_code == 200:
-                return jsonify({"status": "success", "state": state})
-            else:
-                # 2. If it fails, capture the exact HTTP Code and Adafruit's complaint
-                error_msg = f"{response.status_code} - {response.text}"
-                return jsonify({"status": "error", "message": error_msg}), 400
-                
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-            
-    return jsonify({"status": "error", "message": "Invalid command"}), 400
+  }
+}
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+void MQTT_connect() {
+  int8_t ret;
+  if (mqtt.connected()) return;
+
+  Serial.print("Connecting to Adafruit IO... ");
+  uint8_t retries = 5;
+  while ((ret = mqtt.connect()) != 0) {
+    Serial.println(mqtt.connectErrorString(ret));
+    Serial.println("Retrying in 5 seconds...");
+    mqtt.disconnect();
+    delay(5000);
+    retries--;
+    if (retries == 0) while (1);
+  }
+  Serial.println("Adafruit IO Connected!");
+}
