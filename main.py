@@ -5,7 +5,7 @@ import os
 app = Flask(__name__)
 
 # --- ADAFRUIT IO CREDENTIALS ---
-AIO_USERNAME = "CaineJimenez"
+AIO_USERNAME = "cainejimenez"
 AIO_KEY = os.environ.get("AIO_KEY") # This hides your password!
 
 # Note: Adafruit IO REST API uses lowercase and dashes for feed keys!
